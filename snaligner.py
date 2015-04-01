@@ -11,7 +11,7 @@
 workdir: '/proj/julianog/users/ChristianP/amaAbs/'
 readWD = '/proj/julianog/users/ChristianP/amaAbs/'
 
-REF = '/proj/julianog/refs/Pf3D7_v9.3/PlasmoDB-9.3_Pfalciparum3D7_Genome.fasta'
+REF = '/proj/julianog/refs/Pf3D7_v13.0/PlasmoDB-13.0_Pfalciparum3D7_Genome.fasta'
 GATK = '/nas02/apps/biojars-1.0/GenomeAnalysisTK-3.3-0/GenomeAnalysisTK.jar'
 PICARD = '/nas02/apps/picard-1.88/picard-tools-1.88'
 TMPDIR = '/netscr/prchrist/tmp_for_picard/'
@@ -24,32 +24,114 @@ SAMPLES, = glob_wildcards('/proj/julianog/users/ChristianP/amaAbs/symlinks/{samp
 
 ####### Target #######
 rule all:
-#	input: expand('aln/{sample}.sam', ds = DATEDSAMPS)
-#	input: expand('aln/{sample}.dedup.bam', ds = DATEDSAMPS) # Run to here frist, then run dedupMerger.sh
 #	input: expand('aln/{sample}.realn.bam', sample = SAMPLES)
 #	input: expand('coverage/{sample}.cov10', sample = SAMPLES)
 #	input: 'names/bamnames.list'
 #	input: 'coverage/coverage.txt'
-	input: 'coverage/cov_plot.pdf'
-#	input: expand('variants/{list}_chr{chr}_HC.vcf', list = 'our_goods all_goods'.split(), chr = '01 02 03 04 05 06 07 08 09 10 11 12 13 14 MITO'.split())
-#	input: expand('variants/{list}_UG.vcf', list = 'our_goods all_goods'.split())
+#	input: 'coverage/cov_plot.pdf'
+#	input: expand('variants/called_individually/{sample}_HC.vcf', sample = SAMPLES)
+#	input: 'variants/all10_HC.vcf'
+#	input: 'variants/all10_UG.vcf'
+#	input: 'names/bamnames.list'
+#	input: 'variants/05xAT100%.intervals'
+#	input: 'variants/all10_HC.qual.vcf'
+#	input: 'variants/all10_HC.pass.vcf'
+#	input: expand('variants/split_indivs/{sample}_UG.vcf', sample = SAMPLES)
+#	input: expand('variants/split_indivs/indiv_diffs/{sample1}_vs_{sample2}', sample1 = SAMPLES, sample2 = SAMPLES)
+#	input: expand('variants/split_indivs/{sample}_UG.sans0.vcf', sample = SAMPLES)
+	input: expand('variants/indiv_chrs/chr{chr}_HC.vcf', chr = '01 02 03 04 05 06 07 08 09 10 11 12 13 14 apico mito'.split())
 
-rule unified_genotyper :
-	input: bams = 'names/{list}.list', intervals = 'intervals/all_chrs.intervals'
-	output: 'variants/{list}_UG.vcf'
+#rule compare_vcfs:
+#	input:
+#	output: 'variants/split_indivs/indiv_diffs/{sample1}_vs_{sample2}'
+#	shell: 'vcftools --diff'
+#	shell: 'for name in `ls coverage/data/ | grep cov05 | sed "s/\.cov..//"`; \
+#		do \
+#		vcftools --vcf NB3_UG.sans0.vcf --diff 
+#		done'
+
+rule remove_non_entries:
+	input: 'variants/split_indivs/{sample}_UG.vcf'
+	output: 'variants/split_indivs/{sample}_UG.sans0.vcf'
+	shell: 'grep -vP "PL\t0" {input} | grep -vP "\tGT\t." > {output}'
+
+rule split_vcf:
+	input: 'variants/all10_UG.pass.vcf'
+	output: 'variants/split_indivs/{sample}_UG.vcf'
+	shell: 'java -jar {GATK} -T SelectVariants \
+		-R {REF} --variant {input} \
+		-sn {wildcards.sample} \
+		-o {output}'
+
+rule select_records:
+	input: 'variants/all10_UG.qual.vcf'
+	output: 'variants/all10_UG.pass.vcf'
+	shell: 'java -jar {GATK} -T SelectVariants \
+	-R {REF} -V {input} -o {output}\
+	-select "vc.isNotFiltered()" \
+	-restrictAllelesTo BIALLELIC'
+
+rule variant_filtration:
+	input: vcf = 'variants/all10_UG.vcf', intervals = 'variants/all10_UG_05xAT100%.intervals'
+	output: 'variants/all10_UG.qual.vcf'
+	shell: 'java -jar {GATK} -T VariantFiltration \
+	-R {REF} -V {input.vcf} -o {output} \
+	-L {input.intervals} \
+	--filterExpression "QD < 10.0" --filterName "QD" \
+	--filterExpression "MQ < 50.0" --filterName "MQ" \
+	--filterExpression "FS > 10.0" --filterName "FS" \
+	--filterExpression "MQRankSum < -5.0" --filterName "MQRankSum" \
+	--filterExpression "ReadPosRankSum < -5.0" --filterName "ReadPosRankSum" \
+	--logging_level ERROR'
+
+rule filter_by_depth:
+	input: 'variants/all10_UG.vcf'
+	output: 'variants/all10_UG_05xAT100%.intervals'
+	shell: 'java -jar {GATK} -T CoveredByNSamplesSites \
+		-R {REF} -minCov 05 -percentage 0.99999 \
+		-V {input} -out {output}'
+
+rule unified_genotyper_together :
+	input: bams = 'names/bamnames.list'
+	output: 'variants/all10_UG.vcf'
 	threads: 1
 	shell: 'java -jar {GATK} -T UnifiedGenotyper \
 		-R {REF} -I {input.bams} \
-		-L {input.intervals} -nt {threads} \
+		-nt {threads} -ploidy 1 -o {output}'
+		# all_chrs.intervals includes only chrs and mito
+
+rule haplotype_caller_chrs:
+	input: bams = 'names/bamnames.list', chrs = 'intervals/indiv_chrs/chr{chr}.intervals'
+	output: 'variants/indiv_chrs/chr{chr}_HC.vcf'
+	shell: 'java  -Xmx48g -jar {GATK} -T HaplotypeCaller \
+		-R {REF} -I {input.bams} \
+		-L {input.chrs} \
 		-ploidy 1 -o {output}'
 		# all_chrs.intervals includes only chrs and mito
 
-rule haplotype_caller:
-	input: bams = 'names/{list}.list', chrs = 'intervals/indiv_chrs/chr{chr}.intervals'
-	output: 'variants/{list}_chr{chr}_HC.vcf'
-	shell: 'java  -Xmx12g -jar {GATK} -T HaplotypeCaller \
-		-R {REF} -I {input.bams} \
-		-L {input.chrs} \
+rule haplotype_caller_together:
+	input: 'names/bamnames.list'
+	output: 'variants/all10_HC.vcf'
+	shell: 'java -jar {GATK} -T HaplotypeCaller \
+		-R {REF} -I {input} \
+		-ploidy 1 -o {output}'
+		# all_chrs.intervals includes only chrs and mito
+
+rule make_bamnames_list:
+	input: 'names/sample.list'
+	output: 'names/bamnames.list'
+	shell: 'sed s#^#aln/# names/sample.list > names/bamnames.list'
+
+rule make_sample_list:
+	input: expand('aln/{sample}.realn.bam', sample = SAMPLES)
+	output: 'names/sample.list'
+	shell: 'ls aln | grep .realn.bam > names/sample.list'
+
+rule haplotype_caller_indiv:
+	input: 'aln/{sample}.realn.bam'
+	output: 'variants/called_individually/{sample}_HC.vcf'
+	shell: 'java -jar {GATK} -T HaplotypeCaller \
+		-R {REF} -I {input} \
 		-ploidy 1 -o {output}'
 		# all_chrs.intervals includes only chrs and mito
 
@@ -71,12 +153,13 @@ rule make_R_cov_script:
 		coverage$V5 <- 1:length(coverage$V1)
 
 		##Plot the coverage graph
-		pdf(file="coverage/cov_plot.pdf", width = 25, height = 4)
-		plot(coverage$V2 ~ coverage$V5, axes=FALSE, xlab="", ylab="Frac Genome Covered", ylim=c(0,1), col="red", pch=20)
+		pdf(file="coverage/cov_plot.pdf", width = 4, height = 4)
+		plot(coverage$V2 ~ coverage$V5, axes=FALSE, xlab="", ylab="Frac Genome Covered", ylim=c(0,1), col="black", pch=20)
 		points(coverage$V3 ~ coverage$V5, col="grey", pch=20)
-		points(coverage$V4 ~ coverage$V5, col="green", pch=20)
+		points(coverage$V4 ~ coverage$V5, col="red", pch=20)
 		axis(1, at=1:length(coverage$V1), labels=coverage$V1, cex.axis=.7, las=3, cex = 0.5)
 		axis(2, at=c(0.0,0.2,0.4,0.6,0.8,1.0))
+		legend(2, 0.5, c("at 5x", "at 10x", "at 25x"), pch=20, col=c("black","grey","red"))
 		dev.off()' > coverage/covPlotter.r
 		"""
 
@@ -87,7 +170,8 @@ rule digest_coverage:
 		do \
 		cov05=$(tail -1 coverage/data/$name.cov05 | cut -f 5); \
 		cov10=$(tail -1 coverage/data/$name.cov10 | cut -f 5); \
-		echo -e $name"\t"$cov05"\t"$cov10 >> coverage/coverage.txt; \
+		cov25=$(tail -1 coverage/data/$name.cov25 | cut -f 5); \
+		echo -e $name"\t"$cov05"\t"$cov10"\t"$cov25 >> coverage/coverage.txt; \
 		done'
 
 rule calculate_25x_cov:
@@ -154,7 +238,7 @@ rule fastq_to_sam:
 	input: 'symlinks/{sample}_R1.fastq.gz', 'symlinks/{sample}_R2.fastq.gz'
 	output: 'aln/{sample}.sam'
 	shell: 'bwa mem {REF} {readWD}{input[0]} {readWD}{input[1]} \
-		-R "@RG\tID:bwa\tPL:illumina\tLB:{wildcards.sample}\tSM:{wildcards.sample[0]}{wildcards.sample[1]}{wildcards.sample[2]}" \
+		-R "@RG\tID:bwa\tPL:illumina\tLB:{wildcards.sample}\tSM:{wildcards.sample[0]}{wildcards.sample[1]}{wildcards.sample[2]}{wildcards.sample[3]}" \
 		-M -t 1 -v 2 -A 2 -L 15 -U 9 -T 75 \
 		-k 19 -w 100 -d 100 -r 1.5 -c 10000 \
 		-B 4 -O 6 -E 1 > {output}'
