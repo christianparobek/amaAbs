@@ -29,7 +29,6 @@ rule all:
 #	input: 'names/bamnames.list'
 #	input: 'coverage/coverage.txt'
 #	input: 'coverage/cov_plot.pdf'
-#	input: expand('variants/called_individually/{sample}_HC.vcf', sample = SAMPLES)
 #	input: 'variants/all10_HC.vcf'
 #	input: 'variants/all10_UG.vcf'
 #	input: 'names/bamnames.list'
@@ -38,8 +37,9 @@ rule all:
 #	input: 'variants/all10_HC.pass.vcf'
 #	input: expand('variants/split_indivs/{sample}_UG.vcf', sample = SAMPLES)
 #	input: expand('variants/split_indivs/indiv_diffs/{sample1}_vs_{sample2}', sample1 = SAMPLES, sample2 = SAMPLES)
-#	input: expand('variants/split_indivs/{sample}_UG.sans0.vcf', sample = SAMPLES)
-	input: expand('variants/indiv_chrs/chr{chr}_HC.vcf', chr = '01 02 03 04 05 06 07 08 09 10 11 12 13 14 apico mito'.split())
+	input: expand('variants/split_indivs_HC/{sample}_HC.sans0.vcf', sample = SAMPLES)
+#	input: expand('variants/indiv_chrs/chr{chr}_HC.vcf', chr = '01 02 03 04 05 06 07 08 09 10 11 12 13 14 apico mito'.split())
+#	input: 'variants/all10_HC.vcf'
 
 #rule compare_vcfs:
 #	input:
@@ -51,42 +51,42 @@ rule all:
 #		done'
 
 rule remove_non_entries:
-	input: 'variants/split_indivs/{sample}_UG.vcf'
-	output: 'variants/split_indivs/{sample}_UG.sans0.vcf'
+	input: 'variants/split_indivs_HC/{sample}_HC.vcf'
+	output: 'variants/split_indivs_HC/{sample}_HC.sans0.vcf'
 	shell: 'grep -vP "PL\t0" {input} | grep -vP "\tGT\t." > {output}'
 
 rule split_vcf:
-	input: 'variants/all10_UG.pass.vcf'
-	output: 'variants/split_indivs/{sample}_UG.vcf'
+	input: 'variants/all10_HC.pass.vcf'
+	output: 'variants/split_indivs_HC/{sample}_HC.vcf'
 	shell: 'java -jar {GATK} -T SelectVariants \
 		-R {REF} --variant {input} \
 		-sn {wildcards.sample} \
 		-o {output}'
 
 rule select_records:
-	input: 'variants/all10_UG.qual.vcf'
-	output: 'variants/all10_UG.pass.vcf'
+	input: 'variants/all10_HC.qual.vcf'
+	output: 'variants/all10_HC.pass.vcf'
 	shell: 'java -jar {GATK} -T SelectVariants \
 	-R {REF} -V {input} -o {output}\
 	-select "vc.isNotFiltered()" \
 	-restrictAllelesTo BIALLELIC'
 
 rule variant_filtration:
-	input: vcf = 'variants/all10_UG.vcf', intervals = 'variants/all10_UG_05xAT100%.intervals'
-	output: 'variants/all10_UG.qual.vcf'
+	input: vcf = 'variants/all10_HC.vcf', intervals = 'variants/all10_HC_05xAT100%.intervals'
+	output: 'variants/all10_HC.qual.vcf'
 	shell: 'java -jar {GATK} -T VariantFiltration \
 	-R {REF} -V {input.vcf} -o {output} \
 	-L {input.intervals} \
 	--filterExpression "QD < 10.0" --filterName "QD" \
 	--filterExpression "MQ < 50.0" --filterName "MQ" \
-	--filterExpression "FS > 10.0" --filterName "FS" \
+	--filterExpression "FS > 60.0" --filterName "FS" \
 	--filterExpression "MQRankSum < -5.0" --filterName "MQRankSum" \
 	--filterExpression "ReadPosRankSum < -5.0" --filterName "ReadPosRankSum" \
 	--logging_level ERROR'
 
 rule filter_by_depth:
-	input: 'variants/all10_UG.vcf'
-	output: 'variants/all10_UG_05xAT100%.intervals'
+	input: 'variants/all10_HC.vcf'
+	output: 'variants/all10_HC_05xAT100%.intervals'
 	shell: 'java -jar {GATK} -T CoveredByNSamplesSites \
 		-R {REF} -minCov 05 -percentage 0.99999 \
 		-V {input} -out {output}'
@@ -100,20 +100,21 @@ rule unified_genotyper_together :
 		-nt {threads} -ploidy 1 -o {output}'
 		# all_chrs.intervals includes only chrs and mito
 
+rule combine_hc_chrs:
+	input: 'names/chr_vcf_names.list'
+	output: 'variants/all10_HC.vcf'
+	shell: 'java -Xmx2g -jar {GATK} -T CombineVariants \
+		-R {REF} -o {output} \
+		--variant {input} \
+		-genotypeMergeOptions UNSORTED'
+		# UNSORTED just keeps one column for each individual
+
 rule haplotype_caller_chrs:
 	input: bams = 'names/bamnames.list', chrs = 'intervals/indiv_chrs/chr{chr}.intervals'
 	output: 'variants/indiv_chrs/chr{chr}_HC.vcf'
 	shell: 'java  -Xmx48g -jar {GATK} -T HaplotypeCaller \
 		-R {REF} -I {input.bams} \
 		-L {input.chrs} \
-		-ploidy 1 -o {output}'
-		# all_chrs.intervals includes only chrs and mito
-
-rule haplotype_caller_together:
-	input: 'names/bamnames.list'
-	output: 'variants/all10_HC.vcf'
-	shell: 'java -jar {GATK} -T HaplotypeCaller \
-		-R {REF} -I {input} \
 		-ploidy 1 -o {output}'
 		# all_chrs.intervals includes only chrs and mito
 
@@ -126,14 +127,6 @@ rule make_sample_list:
 	input: expand('aln/{sample}.realn.bam', sample = SAMPLES)
 	output: 'names/sample.list'
 	shell: 'ls aln | grep .realn.bam > names/sample.list'
-
-rule haplotype_caller_indiv:
-	input: 'aln/{sample}.realn.bam'
-	output: 'variants/called_individually/{sample}_HC.vcf'
-	shell: 'java -jar {GATK} -T HaplotypeCaller \
-		-R {REF} -I {input} \
-		-ploidy 1 -o {output}'
-		# all_chrs.intervals includes only chrs and mito
 
 rule plot_coverage:
 	input: 'coverage/covPlotter.r'
