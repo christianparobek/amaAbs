@@ -78,3 +78,18 @@ grep "exon\|##" PlasmoDB-13.0_Pfalciparum3D7.gff | grep -v "gene" | head -n -1 >
 ## Use bedtools to subset exonic and non-exonic regions 
 bedtools intersect -a in_all_SEL_in_no_UNSEL.vcf -b PlasmoDB-13.0_Pfalciparum3D7_exons.gff > in_all_SEL_in_no_UNSEL_exons.vcf
 
+
+###########################################
+############ ANNOTATE VARIANTS ############
+###########################################
+
+## RUN snpEff
+java -Xmx4g -jar ~/snpEff/snpEff.jar \
+	-v \
+	-o gatk \
+	Pf3D7v90 \
+	in_all_SEL_in_no_UNSEL.vcf \
+	> in_all_SEL_in_no_UNSEL.anno.vcf
+
+
+
